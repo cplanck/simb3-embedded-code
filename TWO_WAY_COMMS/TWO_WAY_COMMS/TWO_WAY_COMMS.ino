@@ -1,8 +1,9 @@
 ////////////////////////////////////////////////////////////
 //#define ECHO_TO_SERIAL // Allows serial output if uncommented
-//DEVELOPMENT//
-//THIS IS A MODIFIED VERSION OF THE STANDARD SIMB3 4 HOUR CODE TO ADD THE CTD SENSORS//
-//NOTE THAT TIMEOUTS MUST BE ADDED TO THE CTD SENSOR READINGS. 
+// DEVELOPMENT//
+// THIS IS A HEAVILY MODIFIED VERSION OF THE STANDARD SIMB3 4 HOUR CODE TO ADD TWO-WAY COMMUNICATION.
+// MUCH WORK NEEDS TO BE DONE BEFORE THIS IS PRODUCTION READY. NOTE: TEMP STRING IS CURRENTLY REMOVED AND CTD SENSORS ADDED. 
+// 7 MARCH 2022 - CJP
 #define DEBUG 1
 ////////////////////////////////////////////////////////////
 
@@ -155,6 +156,12 @@ float ec_float;                  //float var used to hold the float value of the
 float tds_float;                 //float var used to hold the float value of the TDS.
 float sal_float;                 //float var used to hold the float value of the salinity.
 float sg_float;                  //float var used to hold the float value of the specific gravity.
+
+
+//--------------------- 2 WAY COMMS ----------------------------------
+
+uint8_t rx_buffer;
+uint8_t rx_size;
 
 
 // SBD message format -----------------------------------------------
@@ -354,14 +361,23 @@ void setup()
   //digitalWrite(13, LOW);
 
 
+  rx_buffer = 0;
 }
 
 void loop()
 {
+  Serial.print("U MADE IT HERE");
+  delay(5000);
+  Serial.print("U MADE IT HERE AGAIN");
   resetWatchdog(); //Pet the watchdog
   startTime = prevTime = millis();
   accPower = 0;
   runCounter++;
+  Serial.print("AND NOW HERE!");
+
+
+//  Serial.println(F("Waiting for 10 seconds...in case you screwed up..."));
+//  delay(10000);
 
   Serial.println(F("Begin loop()..."));
 
@@ -587,10 +603,85 @@ void sendIridium()
   iridiumSignal = -1;
   iridiumCount  = 0;
   iridiumError  = -1;
-  
   iridium.getSignalQuality(iridiumSignal);
   message.iridiumSignal = iridiumSignal;
-  iridiumError = iridium.sendSBDBinary(message.bytes, sizeof(message)); //actually transmit
+
+
+// ------------------------------------ TWO-WAY COMMS ------------------------------------
+ 
+  uint8_t buffer[100] = {0}; 
+  Serial.print(buffer[0]);
+  size_t rx_size = sizeof(buffer);
+  
+  iridiumError = iridium.sendReceiveSBDBinary(message.bytes, sizeof(message),buffer,rx_size); //actually transmit
+
+  if (buffer[0] != 0) {
+  Serial.print("IT WORKED!");
+  Serial.println();
+  Serial.println("++++++++");
+  Serial.println(rx_size);
+  Serial.println("++++++++");
+
+  // quick little loop to print the recieved messaged to the console. 
+  for (int i = 0; i<rx_size; i++) {
+    Serial.println((char)buffer[i]);
+  }
+
+  //parse the buffer and define "holdIt" to hold the response as a character array
+
+  char * pch;
+  char * str = (char*)buffer;
+  
+  Serial.println(str);
+  
+  pch = strtok (str,",;");
+  char *holdIt[50];
+  int i = 0;
+  while (pch != NULL)
+  {
+    printf ("%s\n",pch);
+    holdIt[i] = pch;
+    pch = strtok (NULL, ",");
+    i++;
+  }
+
+  //check password
+
+  char *password = holdIt[0];
+  printf("%s\n",password);
+  if (strcmp(password, "021121") == 0) {
+    
+    Serial.println("Password validated: Proceed");
+    
+    for (int i = 1; i<4; i+=2) {
+
+     if(strcmp(holdIt[i],"TF") == 0) {
+      Serial.println("Changing transmission interval..");
+      Serial.print("Transmission interval changed from ");
+      Serial.print(transmissionInterval);
+      Serial.print(" to ");
+      transmissionInterval = atoi(holdIt[i+1]);
+      Serial.print(transmissionInterval);
+
+      Serial.println(holdIt[i+1]);
+      Serial.println(i);
+      Serial.println(holdIt[0]);
+      Serial.println(holdIt[1]);
+      Serial.println(holdIt[2]);
+      Serial.println(transmissionInterval);
+      
+     }
+  
+  }
+  
+  } else {
+    
+    Serial.print("Incorrect password. Try again");
+
+    }
+
+  }
+
 }
 
 
@@ -828,16 +919,16 @@ void readCTDpressure(){
   }
     
   CTDpressure = (2.5*(CTDpressureReturn*0.0001875)-1.25)*1000; //convert to voltage, then to pressure (per Atlast Scientific datasheet), and then multiply by 1000 to prepare for integer conversion below. NOTE: 3/1/22, added 0.74 calibration offset. -CJP
-
-//  calibration looks like this (performed server-side):
+//
 //  uint16_t raw_low = 0.74; // this is what the pressure transducer reports at atmospheric pressure (0 PSIG). 
 //  uint16_t raw_high = 6.4; // this is what the pressure transducer reports at 5 PSIG on the calibration fixture
+//
 //  uint16_t calibrated_pressure = (CTDpressure - raw_low)*5/(raw_high-raw_low) + 0; // calibrated_pressure = (x - raw_low)*(reference range)/(raw_range) + ref_low 
   
   message.CTDpressure = (int)CTDpressure; //cast as integer
 
   Serial.print("  Pressure: ");
-  Serial.print(CTDpressure/1000);          
+  Serial.print(CTDpressure/1000);             //print the data.
   Serial.print(" PSIG");
   Serial.println();
 
@@ -881,8 +972,32 @@ void readCTDconductivity(){
       Serial.println();
       message.CTDconductivity = atof(ec);
     }  
+//  string_pars();
   }
 }
+
+//
+//void string_pars() {                  //this function will break up the CSV string into its 4 individual parts. EC|TDS|SAL|SG.
+//                                      //this is done using the C command “strtok”.
+//
+//  ec = strtok(ec_data, ",");          //let's pars the string at each comma.
+//  tds = strtok(NULL, ",");            //let's pars the string at each comma.
+//  sal = strtok(NULL, ",");            //let's pars the string at each comma.
+//  sg = strtok(NULL, ",");             //let's pars the string at each comma.
+//
+//  Serial.print("  Conductivity: ");    //we now print each value we parsed separately.
+//  Serial.print(ec);                 //this is the EC value.
+//  Serial.print(" uS/cm");
+//  Serial.println();
+//  
+//  message.CTDconductivity = atof(ec);
+//
+//  Serial.print("  Derived Salinity: ");               //we now print each value we parsed separately.
+//  Serial.print(sal);                //this is the salinity value.
+//  Serial.print(" ppt");
+//  Serial.println();
+//     
+//}
 
 
 void readCTDtemperature(){
