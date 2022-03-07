@@ -42,7 +42,7 @@
 #define IRIDIUM_RETRY_DELAY      10000    //10 seconds
 
 // CHANGE THIS BACK TO 60000 BEFORE DEPLOYMENT
-#define GPS_TIMEOUT              6    //60 seconds
+#define GPS_TIMEOUT              60000    //60 seconds
 
 // Pin mappings -----------------------------------------------------
 
@@ -175,6 +175,7 @@ typedef union {
     int32_t     longitude;
     int16_t     airTemp;
     uint16_t    airPressure;
+    uint16_t    humidity;
     uint16_t    waterDepth;
     int16_t     waterTemp;
     uint16_t    snowDist;
@@ -187,8 +188,6 @@ typedef union {
     uint8_t     gpsSatellites;
     uint8_t     iridiumSignal;
     uint8_t     iridiumRetries;
-
-    int16_t     TAC[TAC_BYTES];
 
   } __attribute__((packed));
 
@@ -326,6 +325,7 @@ void setup()
   Serial.begin(115200);
   Serial.println("\r\nCryosphere Innovation CryoBoard");
 #endif
+
   Wire.begin(); // Join the I2C bus as master
 
   // Initialize ADC for CTD pressure transducer
@@ -365,10 +365,15 @@ void setup()
 
 void loop()
 {
+  Serial.print("U MADE IT HERE");
+  delay(5000);
+  Serial.print("U MADE IT HERE AGAIN");
   resetWatchdog(); //Pet the watchdog
   startTime = prevTime = millis();
   accPower = 0;
   runCounter++;
+  Serial.print("AND NOW HERE!");
+
 
 //  Serial.println(F("Waiting for 10 seconds...in case you screwed up..."));
 //  delay(10000);
@@ -376,18 +381,6 @@ void loop()
   Serial.println(F("Begin loop()..."));
 
   displayBanner("Start Sampling", '=', '-');
-
-//  if (iridiumError != 0) {
-//    message.programVersion = 0xF5;
-//    Serial.println(F("Transmitting previous message on Iridium..."));
-//    iridiumOn();
-//    sendIridium();
-//    iridiumOff();
-//    showElapsed(F("Iridium"));
-//    Serial.println(F("Done transmitting..."));
-//    Serial.print(F("Iridium status: "));
-//    Serial.println(iridiumError);
-//  }
 
   clearMessage();
 
@@ -429,29 +422,6 @@ void loop()
   digitalWrite(NUBC_12V_ENABLE, LOW);
 
   int dtcLoop = 0;
-
-  while (dtcLoop < 1) {//change this to something like 2.
-    Serial.println(F("Reading DTC..."));
-    //insert some better DTC checking code in case it failed...
-    dtc.reset();
-    Serial1.begin(19200);
-    errorState = dtc.read();
-    if (errorState) {
-      uint16_t *c;
-      //Serial.println(message.airTemp);
-      if(dtc.packBits()){
-        //Serial.println("Should quit trying!");
-        dtcLoop = 3;
-      }
-      c = dtc.outBits();
-      memcpy(message.TAC, c, sizeof(message.TAC));
-      //memset(c, 0, sizeof(c));
-    }
-    dtc.reset();
-    dtcLoop++;
-  }
-  showElapsed(F("DTC"));
-  Serial.println();
 
 
   Serial.println(F("Reading Snow Depth..."));
@@ -632,27 +602,9 @@ void sendIridium()
   iridiumSignal = -1;
   iridiumCount  = 0;
   iridiumError  = -1;
-
-  // Check Iridium signal strength, loop until above 2 or timeout
-
-//      for (iridiumCount=0; iridiumCount<IRIDIUM_ATTEMPTS; iridiumCount++) {
-//          if (iridium.getSignalQuality(iridiumSignal)==ISBD_SUCCESS) {
-//              if (iridiumSignal>1) {
-//                  break;
-//              }
-//          }
-//          delay(IRIDIUM_RETRY_DELAY);
-//      }
-//  
-//      if (iridiumSignal<2)
-//          return;
   iridium.getSignalQuality(iridiumSignal);
   message.iridiumSignal = iridiumSignal;
-  //    message.iridiumRetries = iridium.getRetries();   // From previous send attempt
 
-  // Test code to replace message segments
-  //message.waterDepth = 0xAB;
-  //message.waterTemp = 0xCD;  
 
 // ------------------------------------ TWO-WAY COMMS ------------------------------------
  
@@ -660,7 +612,7 @@ void sendIridium()
   Serial.print(buffer[0]);
   size_t rx_size = sizeof(buffer);
   
-iridiumError = iridium.sendReceiveSBDBinary(message.bytes, sizeof(message),buffer,rx_size); //actually transmit
+  iridiumError = iridium.sendReceiveSBDBinary(message.bytes, sizeof(message),buffer,rx_size); //actually transmit
 
   if (buffer[0] != 0) {
   Serial.print("IT WORKED!");
@@ -669,7 +621,7 @@ iridiumError = iridium.sendReceiveSBDBinary(message.bytes, sizeof(message),buffe
   Serial.println(rx_size);
   Serial.println("++++++++");
 
-// quick little loop to print the recieved messaged to the console. 
+  // quick little loop to print the recieved messaged to the console. 
   for (int i = 0; i<rx_size; i++) {
     Serial.println((char)buffer[i]);
   }
@@ -730,8 +682,6 @@ iridiumError = iridium.sendReceiveSBDBinary(message.bytes, sizeof(message),buffe
   }
 
 }
-
-
 
 
 void configureGPS()
@@ -820,9 +770,14 @@ void displayMessage()
   
   // Barometer
 
-  printString(F("Barometer"));
+  printString(F("BME280"));
   printLabelFloat(F("Pressure"), message.airPressure / 10.0);
   Serial.println();
+
+  printString(F("BME280"));
+  printLabelFloat(F("Humidity"), message.humidity / 100.0);
+  Serial.println();
+
 
   // 1-Wire bus A
 
@@ -840,26 +795,6 @@ void displayMessage()
   printString(F("Airmar"));
   printLabelFloat(F("Depth"), message.waterDepth / 100.);
   printLabelFloat(F("Temp"), message.waterTemp / 100.);
-  Serial.println();
-
-  // 1-Wire bus B (TAC)
-
-  printString(F("1-Wire B"));
-
-  for (int k = 0; k < TAC_BYTES; k++) {
-    /*printFloat(message.TAC[k]);
-      if (k%8) {
-        Serial.print(' ');
-      } else {
-        Serial.println();
-        printString(F(" "));
-      }
-    */
-    if ((k % 8) == 0) {
-      Serial.println();
-    }
-    printFloat(message.TAC[k]);
-  }
   Serial.println();
 
   // Iridium
@@ -907,14 +842,15 @@ void readAirTemp()
   oneWireA.wireResetSearch();
   delay(250);
   oneWireA.wireSearch(addr);
-
   message.airTemp = readDS18B20(oneWireA, addr);
+  
 }
 
 void readBarometer()
 {
   boolean bmeError;
   int16_t hPa;
+  int16_t hum;
 
   unsigned long startTime = millis();
   while (millis() < startTime + 5000) { //Give it 5 seconds just in case
@@ -929,8 +865,12 @@ void readBarometer()
   if (!bmeError) {
     hPa = floatToInt(bme.readPressure() / 100.0F, 10);
     message.airPressure = (uint16_t)hPa;
+
+    hum = floatToInt(bme.readHumidity(),100);
+    message.humidity = (uint16_t)hum;
   } else {
     message.airPressure = 0xFFFF;
+    message.humidity = 0xFFFF;
   }
 }
 
@@ -961,13 +901,28 @@ boolean readMaxbotix()
 //------------------------- CTD FUNCTIONS --------------------------
 //note: this code is adapted from COMBINE_RTC_EC_PRES script written October 2021
 
-void readCTDpressure()
-{
+void readCTDpressure(){
+
+  uint32_t timeout = millis() + 5000;
+  boolean done = false;
   int16_t CTDpressureReturn;
   float CTDpressure;
 
-  CTDpressureReturn = atlasPressure.readADC_SingleEnded(0); 
-  CTDpressure = (2.5*(CTDpressureReturn*0.0001875)-1.25)*1000; //convert to voltage, then to pressure (per Atlast Scientific datasheet), and then multiply by 1000 to prepare for integer conversion below
+  while (!done && (millis() < timeout)) {
+    CTDpressureReturn = atlasPressure.readADC_SingleEnded(0); 
+    done = true;
+    if(CTDpressureReturn == NULL){
+      CTDpressureReturn = 0;
+      done = false;
+    }
+  }
+    
+  CTDpressure = (2.5*(CTDpressureReturn*0.0001875)-1.25)*1000; //convert to voltage, then to pressure (per Atlast Scientific datasheet), and then multiply by 1000 to prepare for integer conversion below. NOTE: 3/1/22, added 0.74 calibration offset. -CJP
+//
+//  uint16_t raw_low = 0.74; // this is what the pressure transducer reports at atmospheric pressure (0 PSIG). 
+//  uint16_t raw_high = 6.4; // this is what the pressure transducer reports at 5 PSIG on the calibration fixture
+//
+//  uint16_t calibrated_pressure = (CTDpressure - raw_low)*5/(raw_high-raw_low) + 0; // calibrated_pressure = (x - raw_low)*(reference range)/(raw_range) + ref_low 
   
   message.CTDpressure = (int)CTDpressure; //cast as integer
 
@@ -979,91 +934,109 @@ void readCTDpressure()
 }
 
 
-void readCTDconductivity()
-{
+void readCTDconductivity(){
 
   int ec_delay = 600;
+  uint32_t timeout = millis() + 5000;
+  boolean done = false;
   
-  Wire.beginTransmission(ecAddress);                                            //call the circuit by its ID number.
-  Wire.write('r');                                                   //transmit the command that was sent through the serial port.
-  Wire.endTransmission();                                                     //end the I2C data transmission.
+  while (!done && (millis() < timeout)) {
 
-  delay(ec_delay);
-
-  Wire.requestFrom(ecAddress, 32, 1);                                         //call the circuit and request 32 bytes (this could be too small, but it is the max i2c buffer size for an Arduino)
-  code = Wire.read();                                                       //the first byte is the response code, we read this separately.
-
-  while (Wire.available()) {                     //are there bytes to receive.
-        in_char = Wire.read();                   //receive a byte.
-        ec_data[i] = in_char;                    //load this byte into our array.
-        i += 1;                                  //incur the counter for the array element.
-        if (in_char == 0) {                      //if we see that we have been sent a null command.
-          i = 0;                                 //reset the counter i to 0.
-          break;                                 //exit the while loop.
+    Wire.beginTransmission(ecAddress);                                            //call the circuit by its ID number.
+    Wire.write('r');                                                   //transmit the command that was sent through the serial port.
+    Wire.endTransmission();                                                     //end the I2C data transmission.
+  
+    delay(ec_delay);
+  
+    Wire.requestFrom(ecAddress, 32, 1);                                         //call the circuit and request 32 bytes (this could be too small, but it is the max i2c buffer size for an Arduino)
+    code = Wire.read();                                                       //the first byte is the response code, we read this separately.
+  
+    while (Wire.available()) {                     //are there bytes to receive.
+          in_char = Wire.read();                   //receive a byte.
+          ec_data[i] = in_char;                    //load this byte into our array.
+          i += 1;                                  //incur the counter for the array element.
+          if (in_char == 0) {                      //if we see that we have been sent a null command.
+            i = 0;                                 //reset the counter i to 0.
+            break;                                 //exit the while loop.
+          }
+        
         }
-      }
 
-  string_pars();
-  
-  
+    ec = strtok(ec_data, ","); 
+    if(ec != NULL){
+      done = true;
+      Serial.print("  Conductivity: ");    //we now print each value we parsed separately.
+      Serial.print(ec);                 //this is the EC value.
+      Serial.print(" uS/cm");
+      Serial.println();
+      message.CTDconductivity = atof(ec);
+    }  
+//  string_pars();
+  }
 }
 
+//
+//void string_pars() {                  //this function will break up the CSV string into its 4 individual parts. EC|TDS|SAL|SG.
+//                                      //this is done using the C command “strtok”.
+//
+//  ec = strtok(ec_data, ",");          //let's pars the string at each comma.
+//  tds = strtok(NULL, ",");            //let's pars the string at each comma.
+//  sal = strtok(NULL, ",");            //let's pars the string at each comma.
+//  sg = strtok(NULL, ",");             //let's pars the string at each comma.
+//
+//  Serial.print("  Conductivity: ");    //we now print each value we parsed separately.
+//  Serial.print(ec);                 //this is the EC value.
+//  Serial.print(" uS/cm");
+//  Serial.println();
+//  
+//  message.CTDconductivity = atof(ec);
+//
+//  Serial.print("  Derived Salinity: ");               //we now print each value we parsed separately.
+//  Serial.print(sal);                //this is the salinity value.
+//  Serial.print(" ppt");
+//  Serial.println();
+//     
+//}
 
-void string_pars() {                  //this function will break up the CSV string into its 4 individual parts. EC|TDS|SAL|SG.
-                                      //this is done using the C command “strtok”.
 
-  ec = strtok(ec_data, ",");          //let's pars the string at each comma.
-  tds = strtok(NULL, ",");            //let's pars the string at each comma.
-  sal = strtok(NULL, ",");            //let's pars the string at each comma.
-  sg = strtok(NULL, ",");             //let's pars the string at each comma.
+void readCTDtemperature(){
 
-  Serial.print("  Conductivity: ");    //we now print each value we parsed separately.
-  Serial.print(ec);                 //this is the EC value.
-  Serial.print(" uS/cm");
-  Serial.println();
+  uint32_t timeout = millis() + 5000;
+  boolean done = false;
+
+  while (!done && (millis() < timeout)) {
+
+    Wire.beginTransmission(rtdAddress);                                //call the circuit by its ID number.
+    Wire.write('r');                                                   //transmit the command that was sent through the serial port.
+    Wire.endTransmission();                                            //end the I2C data transmission.
   
-  message.CTDconductivity = atof(ec);
-
-  Serial.print("  Derived Salinity: ");               //we now print each value we parsed separately.
-  Serial.print(sal);                //this is the salinity value.
-  Serial.print(" ppt");
-  Serial.println();
-     
-}
-
-
-void readCTDtemperature()
-{
-
-  Wire.beginTransmission(rtdAddress);                                //call the circuit by its ID number.
-  Wire.write('r');                                                   //transmit the command that was sent through the serial port.
-  Wire.endTransmission();                                            //end the I2C data transmission.
-
-  delay(time_);
-
-  Wire.requestFrom(rtdAddress, 20, 1);                               //call the circuit and request 32 bytes (this could be too small, but it is the max i2c buffer size for an Arduino)
-  code = Wire.read();                                                //the first byte is the response code, we read this separately.
-
-  while (Wire.available()) {            //are there bytes to receive.
-        in_char = Wire.read();              //receive a byte.
-        RTD_data[i] = in_char;              //load this byte into our array.
-        i += 1;                             //incur the counter for the array element.
-        if (in_char == 0) {                 //if we see that we have been sent a null command.
-          i = 0;                            //reset the counter i to 0.
-          break;                            //exit the while loop.
+    delay(time_);
+  
+    Wire.requestFrom(rtdAddress, 20, 1);                               //call the circuit and request 32 bytes (this could be too small, but it is the max i2c buffer size for an Arduino)
+    code = Wire.read();                                                //the first byte is the response code, we read this separately.
+  
+    while (Wire.available()) {            //are there bytes to receive.
+          in_char = Wire.read();              //receive a byte.
+          RTD_data[i] = in_char;              //load this byte into our array.
+          i += 1;                             //incur the counter for the array element.
+          if (in_char == 0) {                 //if we see that we have been sent a null command.
+            i = 0;                            //reset the counter i to 0.
+            break;                            //exit the while loop.
+          }
         }
-      }
 
-  Serial.print("  Temperature: ");
-  Serial.print(RTD_data);             //print the data.
-  Serial.print(" deg C");
-  Serial.println();
+    if(RTD_data != NULL){
+      done = true;
+      Serial.print("  Temperature: ");
+      Serial.print(RTD_data);             //print the data.
+      Serial.print(" deg C");
+      Serial.println();
+      float tempTemp;
+      tempTemp = atof(RTD_data);
+      message.CTDtemperature = floatToInt(tempTemp,1000);
+    } 
 
-  
-  float tempTemp;
-  tempTemp = atof(RTD_data);
-  
-  message.CTDtemperature = floatToInt(tempTemp,1000);
+  }
   
 }
 
