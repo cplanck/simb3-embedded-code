@@ -1,15 +1,14 @@
 ////////////////////////////////////////////////////////////
-//#define ECHO_TO_SERIAL // Allows serial output if uncommented
-#define DEBUG 1
-////////////////////////////////////////////////////////////
+// Development SIMB3 full code (version 4) with one-wire temperature string.
+// Written 19 January 2023 by Cameron Planck
 
+#define DEBUG 1
 #include <Arduino.h>
 #include <Wire.h>
 #include <RTCZero.h>
 #include <LineBuffer.h>
 #include "wiring_private.h" // pinPeripheral() function
 #include <SPI.h>
-//#include <TimeLib.h>
 
 #include <IridiumSBD.h>
 #include <GPS.h>
@@ -23,50 +22,59 @@
 #include <DS2482.h>
 #include <Adafruit_ADS1015.h>
 #include <SD.h>
+#include "SIMB3_Onewire_Controller.h"
 
 
 // Version ----------------------------------------------------------
 
-#define PROGRAM_VERSION         0x00
-
+#define PROGRAM_VERSION         4
 #define SBD_RECORD_ID           0xA0
 #define SBD_RECORD_VERSION      0x00
 #define SBD_RECORD_HEADER       (SBD_RECORD_ID | SBD_RECORD_VERSION)
 
 // Program Options --------------------------------------------------
 
+#define IRIDIUM_ENABLE           true // deactivate for testing
+#define TRANSMISSION_INTERVAL    1   //1 = hourly, 4 = every 4 hours
 #define IRIDIUM_ATTEMPTS         10
 #define IRIDIUM_RETRY_DELAY      10000    //10 seconds
 
-#define GPS_TIMEOUT              6    //60 seconds
+// Timeouts
+#define GPS_TIMEOUT              6 //60 seconds
+#define TEMPSTRING_TIMEOUT       10000 //10 seconds
+#define AIR_TEMP_TIMEOUT         10000 //10 seconds
+
+
+// Hardware
+
+#define SIM3_ONEWIRE_TEMPSTRING true
 
 // Pin mappings -----------------------------------------------------
 
-#define NUBC_MAXBOTIX_ENABLE    A0
-#define NUBC_ENVELOPE_ENABLE    A1
-#define NUBC_GPS_ENABLE         12
-#define NUBC_IRIDIUM_ENABLE     13
-#define NUBC_5V_ENABLE          5
-#define NUBC_12V_ENABLE         6
+#define SIMB3_MAXBOTIX_ENABLE    A0
+#define SIMB3_ENVELOPE_ENABLE    A1
+#define SIMB3_GPS_ENABLE         12
+#define SIMB3_IRIDIUM_ENABLE     13
+#define SIMB3_5V_ENABLE          5
+#define SIMB3_12V_ENABLE         6
 
-#define NUBC_LED_G              A3
-#define NUBC_CHIP_SELECT        A4
+#define SIMB3_LED_G              A3
+#define SIMB3_CHIP_SELECT        A4
 
-#define NUBC_WDT_RESET          A1
+#define SIMB3_WDT_RESET          A1
 
 // I2C Addresses ----------------------------------------------------
 
-#define NUBC_GYRO_ADDR          0x6A
-#define NUBC_MAG_ADDR           0x1E
-#define NUBC_POWERMON_ADDR      0x6F
-#define NUBC_BMP280             0x77
+#define SIMB3_GYRO_ADDR          0x6A
+#define SIMB3_MAG_ADDR           0x1E
+#define SIMB3_POWERMON_ADDR      0x6F
+#define SIMB3_BMP280             0x77
 #define CIBC_ADS                0x48
 
-#define NUBC_POWERMON_RESISTOR  0.02
+#define SIMB3_POWERMON_RESISTOR  0.02
 #define TAC_BYTES               120
 
 #if defined(ARDUINO_SAMD_ZERO) && defined(SERIAL_PORT_USBVIRTUAL)
-// Required for Serial on Zero based boards
 #define Serial SERIAL_PORT_USBVIRTUAL
 #endif
 
@@ -76,11 +84,11 @@ void SERCOM1_Handler()
   Serial2.IrqHandler();
 }
 
-LTC2945           powermon        (NUBC_POWERMON_ADDR, NUBC_POWERMON_RESISTOR);
+LTC2945           powermon        (SIMB3_POWERMON_ADDR, SIMB3_POWERMON_RESISTOR);
 DS2482            oneWireA        (0);
 DS2482            oneWireB        (1);
 
-IridiumSBD        iridium         (Serial1, NUBC_IRIDIUM_ENABLE);
+IridiumSBD        iridium         (Serial1, SIMB3_IRIDIUM_ENABLE);
 Adafruit_GPS      GPS             (&Serial1);
 RTCZero           rtc;    // Create RTC object
 BruncinDTC        dtc             (&Serial1);
@@ -89,8 +97,19 @@ Maxbotix          maxbotix        (Serial2);
 Adafruit_BME280   bme; // I2C
 
 
+// One-Wire Controller Variables -----------------------------------
+
+SIMB3_Onewire_Controller SIMB3_ONEWIRE_CONTROLLER;
+
+byte topTempStringBuffer[160];
+byte topTempStringPackedBuffer[120];
+byte bottomTempStringBuffer[160];
+byte bottomTempStringPackedBuffer[120];
+byte airTemperatureBuffer[2];
+
+// General Variables -----------------------------------------------
+
 boolean           errorState;
-//boolean           transmitSuccessful = true;
 
 uint32_t          startTime;
 uint32_t          prevTime;
@@ -99,19 +118,15 @@ float             accPower;
 int               iridiumSignal;
 uint8_t           iridiumCount;
 int               iridiumError;
-int               NextAlarmHour; // Variable to hold next alarm time in hours
+int               NextAlarmHour;
 
-/* Change these values to set the current initial time */
 const byte hours = 13;
 const byte minutes = 49;
 const byte seconds = 33;
-/* Change these values to set the current initial date */
+
 const byte DAY = 15;
 const byte MONTH = 11;
 const byte YEAR = 18;
-
-//set to 1 for hourly transmits, 4 for every 4 hours
-int transmissionInterval = 4;
 
 int iSQ;
 
@@ -119,7 +134,6 @@ char fileName[13];
 
 int sleepCycleCount;
 uint8_t runCounter;
-bool sdPresent; 
 
 // SBD message format -----------------------------------------------
 
@@ -131,7 +145,7 @@ typedef union {
     int32_t     timestamp;
     int32_t     latitude;
     int32_t     longitude;
-    int16_t     airTemp;
+    byte        airTemp[2];
     uint16_t    airPressure;
     uint16_t    waterDepth;
     int16_t     waterTemp;
@@ -146,7 +160,8 @@ typedef union {
     uint8_t     iridiumSignal;
     uint8_t     iridiumRetries;
 
-    int16_t     TAC[TAC_BYTES];
+    byte        topTempStringMessage[120];
+    byte        bottomTempStringMessage[120];
 
   } __attribute__((packed));
 
@@ -156,9 +171,7 @@ typedef union {
 
 SBDMessage message;
 
-/////////////////////////////////////////////////////////////////////
-
-//-- Helper functions for printing ----------------------------------
+//-- Function for printing ---------------------------------------
 
 void printDigits(int digits, char sep = ' ')
 {
@@ -255,7 +268,6 @@ void clearMessage() {
 
   memset(message.bytes, 0, sizeof(message));
 
-  //message.header = SBD_RECORD_HEADER;
   message.header = runCounter;
   message.programVersion = PROGRAM_VERSION;
   message.timestamp = rtc.getEpoch();
@@ -271,37 +283,18 @@ int16_t floatToInt(float value, float scale)
   }
 }
 
-/////////////////////////////////////////////////////////////////////
+//-- Setup Loop ----------------------------------------------------
 
 void setup()
 {
   rtc.begin();    // Start the RTC in 24hr mode
   rtc.setTime(hours, minutes, seconds);   // Set the time
   rtc.setDate(DAY, MONTH, YEAR);    // Set the date
-
-#ifdef ECHO_TO_SERIAL
-  while (! Serial); // Wait until Serial is ready
-  Serial.begin(115200);
-  Serial.println("\r\nCryosphere Innovation CryoBoard");
-#endif
+  
   Wire.begin(); // Join the I2C bus as master
 
   configureIO();
   resetWatchdog(); //Pet the watchdog
-
-  digitalWrite(NUBC_5V_ENABLE, HIGH);
-  delay(20); //Let the SD PSU power up (Probably not needed)
-  Serial.print(F("Initializing SD card..."));
-
-  // see if the card is present and can be initialized:
-  if (!SD.begin(NUBC_CHIP_SELECT)) {
-    Serial.println(F("Card failed, or not present"));
-    sdPresent = 0;
-  } else {
-    Serial.println(F("card initialized."));
-  sdPresent = 1;
-  }
-  digitalWrite(NUBC_5V_ENABLE, LOW);
 
   Serial.println();
   Serial.print(F("CRYOSPHERE INNOVATION SIMB3 Ver "));
@@ -309,10 +302,26 @@ void setup()
   Serial.print(F(" ... "));
   Serial.println(F("Ready"));
 
-  digitalWrite(NUBC_LED_G, HIGH);
-  //delay(15000);
-  //digitalWrite(13, LOW);
+  // flash LED to indicated transmission interval
+  if(TRANSMISSION_INTERVAL == 1){
+      digitalWrite(SIMB3_LED_G, HIGH);
+      delay(500);
+      digitalWrite(SIMB3_LED_G, LOW);
+      delay(500);
+  }
+  if(TRANSMISSION_INTERVAL == 4){
+    for(int i = 0; i < 4; i++){
+      digitalWrite(SIMB3_LED_G, HIGH);
+      delay(500);
+      digitalWrite(SIMB3_LED_G, LOW);
+      delay(500);
+    }
+  }
+  digitalWrite(SIMB3_LED_G, HIGH);
 }
+
+
+//== Main Loop (this runs iteratively) ===============================
 
 void loop()
 {
@@ -321,149 +330,79 @@ void loop()
   accPower = 0;
   runCounter++;
 
-//  Serial.println(F("Waiting for 10 seconds...in case you screwed up..."));
-//  delay(10000);
-
-  Serial.println(F("Begin loop()..."));
-
+  Serial.println(F("Beginning Loop()..."));
   displayBanner("Start Sampling", '=', '-');
 
-//  if (iridiumError != 0) {
-//    message.programVersion = 0xF5;
-//    Serial.println(F("Transmitting previous message on Iridium..."));
-//    iridiumOn();
-//    sendIridium();
-//    iridiumOff();
-//    showElapsed(F("Iridium"));
-//    Serial.println(F("Done transmitting..."));
-//    Serial.print(F("Iridium status: "));
-//    Serial.println(iridiumError);
-//  }
-
+  // Clear SBD message and turn on power monitor
   clearMessage();
-
   powermon.wakeup();
 
-  digitalWrite(NUBC_5V_ENABLE, HIGH);
-  digitalWrite(NUBC_MAXBOTIX_ENABLE, HIGH);
-  digitalWrite(NUBC_GPS_ENABLE, HIGH);
+  digitalWrite(SIMB3_5V_ENABLE, HIGH);
+  digitalWrite(SIMB3_MAXBOTIX_ENABLE, HIGH);
+  digitalWrite(SIMB3_GPS_ENABLE, HIGH);
 
-  Serial.println(F("Reading Air Temp..."));
-  readAirTemp();
-  showElapsed(F("1-Wire A"));
-
+  // Read Barometers
   Serial.println(F("Reading Barometer..."));
   readBarometer();
   showElapsed(F("BMP280 Barometer"));
   resetWatchdog(); //Pet the watchdog
 
+  // Read GPS
   Serial.println(F("Reading GPS..."));
   GPS.begin(9600);
-  //GPS.begin(9600);
   configureGPS();
   if (readGPS()) {
     rtc.setTime(GPS.hour, GPS.minute, GPS.seconds);   // Set the time
-    //rtc.setTime(GPS.hour, 45, GPS.seconds);   // Short test, don't leave me in!!
     rtc.setDate(GPS.day, GPS.month, GPS.year);    // Set the date
     message.timestamp = rtc.getEpoch(); //Second place this gets set, just in case.
   }
-  //delay(5000);
   showElapsed(F("GPS"));
   Serial.println(F("GPS Read...Turning off GPS..."));
-  digitalWrite(NUBC_GPS_ENABLE, LOW);
+  digitalWrite(SIMB3_GPS_ENABLE, LOW);
   resetWatchdog(); //Pet the watchdog
 
-  digitalWrite(NUBC_12V_ENABLE, LOW);
+  digitalWrite(SIMB3_12V_ENABLE, LOW);
 
-  int dtcLoop = 0;
+  // Read One-Wire Controller
+  readOnewireController();
+  showElapsed(F("One-wire Controller"));
 
-  while (dtcLoop < 1) {//change this to something like 2.
-    Serial.println(F("Reading DTC..."));
-    //insert some better DTC checking code in case it failed...
-    dtc.reset();
-    Serial1.begin(19200);
-    errorState = dtc.read();
-    if (errorState) {
-      uint16_t *c;
-      //Serial.println(message.airTemp);
-      if(dtc.packBits()){
-        //Serial.println("Should quit trying!");
-        dtcLoop = 3;
-      }
-      c = dtc.outBits();
-      memcpy(message.TAC, c, sizeof(message.TAC));
-      //memset(c, 0, sizeof(c));
-    }
-    dtc.reset();
-    dtcLoop++;
-  }
-  showElapsed(F("DTC"));
-
+  // Read Maxbotix
   Serial.println(F("Reading Snow Depth..."));
   readMaxbotix();
   showElapsed(F("Maxbotix"));
-  digitalWrite(NUBC_MAXBOTIX_ENABLE, LOW);
+  digitalWrite(SIMB3_MAXBOTIX_ENABLE, LOW);
 
+  // Read Airmar
   Serial.println(F("Reading Airmar..."));
   readAirmar();
   showElapsed(F("Airmar"));
-  digitalWrite(NUBC_12V_ENABLE, HIGH);
-
-  ///////////////////////////////////////////////////////////////////////////////
-  //SD CARD CODE
-  ///////////////////////////////////////////////////////////////////////////////
-  if (sdPresent) {
-    snprintf( fileName, sizeof(fileName), "BL%02d%02d%02d.BIN", rtc.getDay(), rtc.getMonth(), rtc.getYear());
-
-    // open the file. note that only one file can be open at a time,
-    // so you have to close this one before opening another.
-    File dataFile = SD.open(fileName, FILE_WRITE);
-
-    // if the file is available, write to it:
-    if (dataFile) {
-      dataFile.write(message.bytes, sizeof(message));
-      dataFile.println();
-      dataFile.close();
-    }
-    // if the file isn't open, pop up an error:
-    else {
-      Serial.print("error opening ");
-      Serial.println(fileName);
-    }
-  }
+  digitalWrite(SIMB3_12V_ENABLE, HIGH);
 
   displayMessage();
 
-
-// -------Disable Iridium transmission for testing--------
-  Serial.println(F("Transmitting on Iridium..."));
-  iridiumOn();
-  Serial.println(F("Iridium is on."));
-  resetWatchdog(); //Pet the watchdog
-  sendIridium();
-  iridiumOff();
-  showElapsed(F("Iridium"));
-  Serial.println(F("Done transmitting..."));
-  Serial.print(F("Iridium status: "));
-  Serial.println(iridiumError);
-  if (iridiumError == 0) {
-    digitalWrite(NUBC_LED_G, LOW);
+  // Transmit over Iridium
+  if(IRIDIUM_ENABLE){
+    Serial.println(F("\nTransmitting on Iridium..."));  
+    iridiumOn();
+    Serial.println(F("Iridium is on."));
+    resetWatchdog(); //Pet the watchdog
+    sendIridium();
+    iridiumOff();
+    showElapsed(F("Iridium"));
+    Serial.println(F("Done transmitting..."));
+    Serial.print(F("Iridium status: "));
+    Serial.println(iridiumError);
+    if (iridiumError == 0) {
+      digitalWrite(SIMB3_LED_G, LOW);
+      }
   }
-// -------Disable Iridium transmission for testing--------
-
-
   
-//  if (iridiumError == 0) {
-//    transmitSuccessful = true;
-//  } else {
-//    transmitSuccessful = false;
-//  }
+  // Turn off power rails
+  digitalWrite(SIMB3_12V_ENABLE, HIGH);
+  digitalWrite(SIMB3_5V_ENABLE, LOW);
 
-  //displayMessage();
-
-  digitalWrite(NUBC_12V_ENABLE, HIGH);
-  digitalWrite(NUBC_5V_ENABLE, LOW);
-
+  // Shut down power monitor
   powermon.shutdown();
 
 #if DEBUG
@@ -472,39 +411,34 @@ void loop()
   printFloatUnits(accPower, F("mWH"));
   Serial.println();
   printSeparator('-');
-
-//  displayMessage();
-
   displayBanner("Going to sleep", '-', '=');
 #endif
+
+  // Put buoy to sleep
   sleepCycleCount = 0;
   buoySleep();
 };
 
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//== End Main Loop ==============================================
 
+//-- Operational functions --------------------------------------
 void configureIO()
 {
-  pinMode(NUBC_MAXBOTIX_ENABLE, OUTPUT);
-  //pinMode(NUBC_ENVELOPE_ENABLE, OUTPUT); //Not used
-  pinMode(NUBC_GPS_ENABLE, OUTPUT);
-  pinMode(NUBC_IRIDIUM_ENABLE, OUTPUT);
-  pinMode(NUBC_5V_ENABLE, OUTPUT);
-  pinMode(NUBC_12V_ENABLE, OUTPUT);
-  pinMode(NUBC_LED_G, OUTPUT);
-  pinMode(NUBC_WDT_RESET, OUTPUT);
+  pinMode(SIMB3_MAXBOTIX_ENABLE, OUTPUT);
+  pinMode(SIMB3_GPS_ENABLE, OUTPUT);
+  pinMode(SIMB3_IRIDIUM_ENABLE, OUTPUT);
+  pinMode(SIMB3_5V_ENABLE, OUTPUT);
+  pinMode(SIMB3_12V_ENABLE, OUTPUT);
+  pinMode(SIMB3_LED_G, OUTPUT);
+  pinMode(SIMB3_WDT_RESET, OUTPUT);
 
-  digitalWrite(NUBC_MAXBOTIX_ENABLE, LOW);
-  //digitalWrite(NUBC_ENVELOPE_ENABLE, LOW); //Not used
-  digitalWrite(NUBC_GPS_ENABLE, LOW);
-  digitalWrite(NUBC_IRIDIUM_ENABLE, LOW);
-  digitalWrite(NUBC_5V_ENABLE, LOW);
-  digitalWrite(NUBC_12V_ENABLE, HIGH);
-  digitalWrite(NUBC_LED_G, LOW);
-  digitalWrite(NUBC_WDT_RESET, LOW);
+  digitalWrite(SIMB3_MAXBOTIX_ENABLE, LOW);
+  digitalWrite(SIMB3_GPS_ENABLE, LOW);
+  digitalWrite(SIMB3_IRIDIUM_ENABLE, LOW);
+  digitalWrite(SIMB3_5V_ENABLE, LOW);
+  digitalWrite(SIMB3_12V_ENABLE, HIGH);
+  digitalWrite(SIMB3_LED_G, LOW);
+  digitalWrite(SIMB3_WDT_RESET, LOW);
 
   detachInterrupt(0);
   detachInterrupt(1);
@@ -520,7 +454,6 @@ void configureIridium()
   Serial.println(F("Configuring the iridium"));
   iridium.attachConsole(Serial);
   iridium.attachDiags(Serial);
-  //iridium.begin();
   Serial.println(F("after iridium begin"));
   iridium.setPowerProfile(1);
   Serial.println(F("after set power profile"));
@@ -529,12 +462,11 @@ void configureIridium()
 
 void iridiumOn()
 {
-  digitalWrite(NUBC_IRIDIUM_ENABLE, HIGH);
+  digitalWrite(SIMB3_IRIDIUM_ENABLE, HIGH);
   Serial.println(F("Turned on the iridium"));
   Serial1.begin(19200);
   configureIridium();
   Serial.println(F("configured the iridium"));
-  //  delay(100);
   iridium.isAsleep();
   iridium.begin();
 }
@@ -542,7 +474,7 @@ void iridiumOn()
 void iridiumOff()
 {
   iridium.sleep();
-  digitalWrite(NUBC_IRIDIUM_ENABLE, LOW);
+  digitalWrite(SIMB3_IRIDIUM_ENABLE, LOW);
 }
 
 void sendIridium()
@@ -551,35 +483,16 @@ void sendIridium()
   iridiumCount  = 0;
   iridiumError  = -1;
 
-  // Check Iridium signal strength, loop until above 2 or timeout
-
-//      for (iridiumCount=0; iridiumCount<IRIDIUM_ATTEMPTS; iridiumCount++) {
-//          if (iridium.getSignalQuality(iridiumSignal)==ISBD_SUCCESS) {
-//              if (iridiumSignal>1) {
-//                  break;
-//              }
-//          }
-//          delay(IRIDIUM_RETRY_DELAY);
-//      }
-//  
-//      if (iridiumSignal<2)
-//          return;
   iridium.getSignalQuality(iridiumSignal);
   message.iridiumSignal = iridiumSignal;
-  //    message.iridiumRetries = iridium.getRetries();   // From previous send attempt
-
-  // Test code to replace message segments
-  //message.waterDepth = 0xAB;
-  //message.waterTemp = 0xCD;  
   
   iridiumError = iridium.sendSBDBinary(message.bytes, sizeof(message)); //actually transmit
-  //const uint8_t mess[] = "This is a test of SIMB3 comms.";
-  //iridiumError = iridium.sendSBDBinary(mess, sizeof(mess));
+ 
 }
 
 void configureGPS()
 {
-  digitalWrite(NUBC_GPS_ENABLE, HIGH);
+  digitalWrite(SIMB3_GPS_ENABLE, HIGH);
 
   GPS.begin(9600);
 
@@ -593,7 +506,6 @@ boolean readGPS()
   uint32_t timeout = millis() + GPS_TIMEOUT;
   bool found = false;
 
-  //gpsSerial.flush();
   GPS.reset();
 
   while ((millis() < timeout) && !found) {
@@ -613,8 +525,7 @@ boolean readGPS()
 
 void displayMessage()
 {
-  // Header
-
+  Serial.println("\n---------------------- SBD Message Preview ----------------------\n");
   printString(F("Header"));
   Serial.print(F("ID: "));
   Serial.print(message.header & 0xF0);
@@ -623,11 +534,11 @@ void displayMessage()
   Serial.print(F(" Software Version: "));
   Serial.println(message.programVersion);
 
+  // Timestamp
   printString(F("Timestamp"));
   Serial.println(message.timestamp);
 
   // GPS
-
   printString(F("GPS Time"));
   Serial.print("20");
   printDigits(GPS.year, '-');
@@ -648,7 +559,6 @@ void displayMessage()
   Serial.println();
 
   // Compass
-
   printString(F("Compass"));
   printLabelFloat(F("Heading"), message.heading / 10.);
   printLabelFloat(F("pitch"), message.pitch / 10.);
@@ -656,51 +566,26 @@ void displayMessage()
   Serial.println();
 
   // Barometer
-
   printString(F("Barometer"));
   printLabelFloat(F("Pressure"), message.airPressure / 10.0);
   Serial.println();
 
-  // 1-Wire bus A
-
-  printString(F("1-Wire A"));
-  printLabelFloat(F("Air temp"), float(message.airTemp) * 0.0625);
+  // Air Temp
+  printString(F("Air Temp"));
+  printLabelFloat(F("Deg C"), SIMB3_ONEWIRE_CONTROLLER.decodeTemperatureBytes(message.airTemp[0], message.airTemp[1]));
   Serial.println();
 
   // Maxbotix
-
   printString(F("Maxbotix"));
   Serial.println(message.snowDist);
 
   // Airmar
-
   printString(F("Airmar"));
   printLabelFloat(F("Depth"), message.waterDepth / 100.);
   printLabelFloat(F("Temp"), message.waterTemp / 100.);
   Serial.println();
 
-  // 1-Wire bus B (TAC)
-
-  printString(F("1-Wire B"));
-
-  for (int k = 0; k < TAC_BYTES; k++) {
-    /*printFloat(message.TAC[k]);
-      if (k%8) {
-        Serial.print(' ');
-      } else {
-        Serial.println();
-        printString(F(" "));
-      }
-    */
-    if ((k % 8) == 0) {
-      Serial.println();
-    }
-    printFloat(message.TAC[k]);
-  }
-  Serial.println();
-
   // Iridium
-
   printString(F("Iridium"));
   printLabelInt(F("SQF"), message.iridiumSignal);
   printLabelInt(F("Count"), iridiumCount);
@@ -712,40 +597,15 @@ void displayMessage()
   } else {
     Serial.print(F("OK"));
   }
-  Serial.println();
+  Serial.println("\n");
 
-}
+// One-Wire Controller
+  Serial.println(F("One-Wire Temperature String (Deg C)"));
+  SIMB3_ONEWIRE_CONTROLLER.printTemperatureString(1, topTempStringBuffer);
+  Serial.println(F(""));
+  SIMB3_ONEWIRE_CONTROLLER.printTemperatureString(2, bottomTempStringBuffer);
 
-int16_t readDS18B20 (DS2482& oneWire, byte* addr)
-{
-  byte data[9];
 
-  oneWire.wireReset();
-  oneWire.wireSelect(addr);
-  oneWire.wireWriteByte(0x44); // Start conversion w/ parasite power
-
-  delay(1000);
-
-  oneWire.wireReset();
-  oneWire.wireSelect(addr);
-  oneWire.wireWriteByte(0xBE); // Read scratchpad
-
-  for (int k = 0; k < 9; k++) {
-    data[k] = oneWire.wireReadByte();
-  }
-
-  return (data[1] << 8) + data[0];
-}
-
-void readAirTemp()
-{
-  byte addr[8];
-
-  oneWireA.wireResetSearch();
-  delay(250);
-  oneWireA.wireSearch(addr);
-
-  message.airTemp = readDS18B20(oneWireA, addr);
 }
 
 void readBarometer()
@@ -769,6 +629,61 @@ void readBarometer()
   } else {
     message.airPressure = 0xFFFF;
   }
+}
+
+void readOnewireController(){
+
+  Serial.print(F("Resetting One-Wire controller..."));
+  SIMB3_ONEWIRE_CONTROLLER.reset();
+  Serial.println(F("Controller reset.\n"));
+
+  // Read top temperature string
+  bool done = false;
+  unsigned long timeout = millis() + TEMPSTRING_TIMEOUT;
+  while(!done && (millis() < timeout)){
+    done = SIMB3_ONEWIRE_CONTROLLER.readTopString();
+  }
+
+  delay(2000);
+
+  SIMB3_ONEWIRE_CONTROLLER.requestTemperatureStringBytes(1, topTempStringBuffer);
+  SIMB3_ONEWIRE_CONTROLLER.packTemperaturesForTransmission(80, topTempStringBuffer, topTempStringPackedBuffer);
+
+  for(int i = 0; i < 120; i++){
+    message.topTempStringMessage[i] = topTempStringPackedBuffer[i];
+  }
+
+  // Read bottom temperature string
+  done = false;
+  timeout = millis() + TEMPSTRING_TIMEOUT;
+  while(!done && (millis() < timeout)){
+    done = SIMB3_ONEWIRE_CONTROLLER.readBottomString();
+  }
+  
+  delay(2000);
+  
+  SIMB3_ONEWIRE_CONTROLLER.requestTemperatureStringBytes(2, bottomTempStringBuffer);
+  SIMB3_ONEWIRE_CONTROLLER.packTemperaturesForTransmission(80, bottomTempStringBuffer, bottomTempStringPackedBuffer);
+
+  for(int i = 0; i < 120; i++){
+    message.bottomTempStringMessage[i] = bottomTempStringPackedBuffer[i];
+  }
+
+  // Read air temperature
+  done = false;
+  timeout = millis() + AIR_TEMP_TIMEOUT;
+  while(!done && (millis() < timeout)){
+    done = SIMB3_ONEWIRE_CONTROLLER.readAirTemperature();
+  }
+
+  delay(2000);
+
+  SIMB3_ONEWIRE_CONTROLLER.requestAirTempBytes(airTemperatureBuffer);
+  
+  for(int i = 0; i < 2; i++){
+    message.airTemp[i] = airTemperatureBuffer[i];
+  }
+  
 }
 
 boolean readMaxbotix()
@@ -801,21 +716,17 @@ boolean readAirmar()
   boolean done = false;
 
   airmar.begin(4800);
-  // Assign pins 10 & 11 SERCOM functionality
   pinPeripheral(10, PIO_SERCOM);
   pinPeripheral(11, PIO_SERCOM);
   airmar.reset();
 
   while (!done && (millis() < timeout)) {
     airmar.read();
-    //Serial.println(airmar.lastNMEA());
     done = airmar.newNMEAreceived() && airmar.parse(airmar.lastNMEA()) && airmar.hasFix();
   }
 
   message.waterDepth = floatToInt(airmar.waterDepth, 100);
   message.waterTemp = floatToInt(airmar.waterTemp, 100);
-
-  Serial.println(message.waterDepth);
 
   return done;
 }
@@ -828,7 +739,7 @@ void alarmMatch() // Do something when interrupt called
 float displayPowerMonitor()
 {
   float vin = powermon.read12(LTC2945_VIN_MSB_REG) * 0.025;
-  float ain = powermon.read12(LTC2945_DELTA_SENSE_MSB_REG) * 25 / NUBC_POWERMON_RESISTOR / 1000;
+  float ain = powermon.read12(LTC2945_DELTA_SENSE_MSB_REG) * 25 / SIMB3_POWERMON_RESISTOR / 1000;
   float pwr = vin * ain;
 
   message.batteryVoltage = floatToInt(vin, 100);
@@ -836,8 +747,6 @@ float displayPowerMonitor()
 #if DEBUG
   printFloatUnits(vin, F("V"));
   printFloatUnits(ain, F("mA"));
-  //printFloatUnits(pwr,F("mW"));
-  //Serial.println();
 #endif
 
   return pwr;
@@ -853,7 +762,7 @@ void showElapsed(FlashString msg)                                           //--
   printFloatUnits(float(now - startTime) / 1000, F("s"));
   printFloatUnits(float(deltaTime) / 1000, F("s"));
   printString(msg);
-#endif                              a                                        //---------------------------------------//
+#endif                                                                     //---------------------------------------//
 
   float mW = displayPowerMonitor();                                       // Determines current draw
   float mWh = deltaTime / 1000.0 / 3600 * mW;                             // Calculates milliWatt hours
@@ -867,9 +776,9 @@ void showElapsed(FlashString msg)                                           //--
 
 void resetWatchdog() {
   //Pets the WDT and keeps the program alive. If the WDT trips the chip will experience a hard reset.
-  digitalWrite(NUBC_WDT_RESET, HIGH);
+  digitalWrite(SIMB3_WDT_RESET, HIGH);
   delay(20);
-  digitalWrite(NUBC_WDT_RESET, LOW);
+  digitalWrite(SIMB3_WDT_RESET, LOW);
 }
 
 void buoySleep() {
@@ -888,18 +797,18 @@ void buoySleep() {
 void postSleepRoutine() {
   sleepCycleCount++;
   USBDevice.attach();
-  serialConnect();
   resetWatchdog(); //Pet the watchdog
   Serial.println(F("Just woke up."));
   
-  if (transmissionInterval == 1) {
+  if (TRANSMISSION_INTERVAL == 1) {
     if (rtc.getMinutes() == 0 || sleepCycleCount > 65) {
       return;  
     } else {
       Serial.println(F("Sleeping some more."));
       buoySleep();
   }
-  } else if (transmissionInterval == 4) {
+  } 
+  else if (TRANSMISSION_INTERVAL == 4) {
     if ((rtc.getMinutes() == 0 && (rtc.getHours() == 0 || rtc.getHours() == 4 || rtc.getHours() == 8 || rtc.getHours() == 12 || rtc.getHours() == 16 || rtc.getHours() == 20)) || sleepCycleCount > 260) {
       return;  
     } else {
@@ -907,12 +816,4 @@ void postSleepRoutine() {
       buoySleep();
     }
   }
-}
-void serialConnect() {
-#ifdef ECHO_TO_SERIAL
-  delay(1000);
-  Serial.begin(115200);
-  while (! Serial); // Wait until Serial is ready
-  Serial.println("\r\nFeather M0 LowPower Logger\r\n");
-#endif
 }
