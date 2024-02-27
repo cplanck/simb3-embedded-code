@@ -7,7 +7,7 @@
 #include <Wire.h>
 #include <RTCZero.h>
 #include <LineBuffer.h>
-#include "wiring_private.h" // pinPeripheral() function
+#include "wiring_private.h"  // pinPeripheral() function
 #include <SPI.h>
 
 #include <IridiumSBD.h>
@@ -24,77 +24,78 @@
 #include <SD.h>
 #include "SIMB3_Onewire_Controller.h"
 
-
 // Version ----------------------------------------------------------
 
-#define PROGRAM_VERSION         4
-#define SBD_RECORD_ID           0xA0
-#define SBD_RECORD_VERSION      0x00
-#define SBD_RECORD_HEADER       (SBD_RECORD_ID | SBD_RECORD_VERSION)
+#define PROGRAM_VERSION 8
+#define SBD_RECORD_ID 0xA0
+#define SBD_RECORD_VERSION 0x00
+#define SBD_RECORD_HEADER (SBD_RECORD_ID | SBD_RECORD_VERSION)
 
 // Program Options --------------------------------------------------
 
-#define IRIDIUM_ENABLE           true // deactivate for testing
-#define TRANSMISSION_INTERVAL    1   //1 = hourly, 4 = every 4 hours
-#define IRIDIUM_ATTEMPTS         10
-#define IRIDIUM_RETRY_DELAY      10000    //10 seconds
+#define IRIDIUM_ENABLE false     // deactivate for testing
+#define TRANSMISSION_INTERVAL 4  //1 = hourly, 4 = every 4 hours
+#define IRIDIUM_ATTEMPTS 10
+#define IRIDIUM_RETRY_DELAY 10000  //10 seconds
 
 // Timeouts
-#define GPS_TIMEOUT              6 //60 seconds
-#define TEMPSTRING_TIMEOUT       10000 //10 seconds
-#define AIR_TEMP_TIMEOUT         10000 //10 seconds
 
+#define GPS_TIMEOUT 6             //60 seconds
+#define TEMPSTRING_ATTEMPTS      5
+#define AIR_TEMP_ATTEMPTS        5
 
 // Hardware
-
-#define SIM3_ONEWIRE_TEMPSTRING true
+#define TOP_TEMP_STRING true
+#define BOTTOM_TEMP_STRING true
+#define INCIDENT_PYRANOMETER false
+#define REFLECTED_PYRANOMETER false
 
 // Pin mappings -----------------------------------------------------
 
-#define SIMB3_MAXBOTIX_ENABLE    A0
-#define SIMB3_ENVELOPE_ENABLE    A1
-#define SIMB3_GPS_ENABLE         12
-#define SIMB3_IRIDIUM_ENABLE     13
-#define SIMB3_5V_ENABLE          5
-#define SIMB3_12V_ENABLE         6
+#define SIMB3_MAXBOTIX_ENABLE A0
+#define SIMB3_ENVELOPE_ENABLE A1
+#define SIMB3_GPS_ENABLE 12
+#define SIMB3_IRIDIUM_ENABLE 13
+#define SIMB3_5V_ENABLE 5
+#define SIMB3_12V_ENABLE 6
 
-#define SIMB3_LED_G              A3
-#define SIMB3_CHIP_SELECT        A4
+#define SIMB3_LED_G A3
+#define SIMB3_CHIP_SELECT A4
 
-#define SIMB3_WDT_RESET          A1
+#define SIMB3_WDT_RESET A1
 
 // I2C Addresses ----------------------------------------------------
 
-#define SIMB3_GYRO_ADDR          0x6A
-#define SIMB3_MAG_ADDR           0x1E
-#define SIMB3_POWERMON_ADDR      0x6F
-#define SIMB3_BMP280             0x77
-#define CIBC_ADS                0x48
+#define SIMB3_GYRO_ADDR 0x6A
+#define SIMB3_MAG_ADDR 0x1E
+#define SIMB3_POWERMON_ADDR 0x6F
+#define SIMB3_BMP280 0x77
+#define CIBC_ADS 0x48
 
-#define SIMB3_POWERMON_RESISTOR  0.02
-#define TAC_BYTES               120
+#define SIMB3_POWERMON_RESISTOR 0.02
+#define TAC_BYTES 120
 
 #if defined(ARDUINO_SAMD_ZERO) && defined(SERIAL_PORT_USBVIRTUAL)
 #define Serial SERIAL_PORT_USBVIRTUAL
 #endif
 
-Uart          Serial2         (&sercom1, 11, 10, SERCOM_RX_PAD_0, UART_TX_PAD_2);
-void SERCOM1_Handler()
-{
+Uart Serial2(&sercom1, 11, 10, SERCOM_RX_PAD_0, UART_TX_PAD_2);
+void SERCOM1_Handler() {
   Serial2.IrqHandler();
 }
 
-LTC2945           powermon        (SIMB3_POWERMON_ADDR, SIMB3_POWERMON_RESISTOR);
-DS2482            oneWireA        (0);
-DS2482            oneWireB        (1);
+LTC2945 powermon(SIMB3_POWERMON_ADDR, SIMB3_POWERMON_RESISTOR);
+DS2482 oneWireA(0);
+DS2482 oneWireB(1);
 
-IridiumSBD        iridium         (Serial1, SIMB3_IRIDIUM_ENABLE);
-Adafruit_GPS      GPS             (&Serial1);
-RTCZero           rtc;    // Create RTC object
-BruncinDTC        dtc             (&Serial1);
-AirmarSS510       airmar          (Serial2);
-Maxbotix          maxbotix        (Serial2);
-Adafruit_BME280   bme; // I2C
+IridiumSBD iridium(Serial1, SIMB3_IRIDIUM_ENABLE);
+Adafruit_GPS GPS(&Serial1);
+RTCZero rtc;  // Create RTC object
+BruncinDTC dtc(&Serial1);
+AirmarSS510 airmar(Serial2);
+Maxbotix maxbotix(Serial2);
+Adafruit_BME280 bme;  // I2C
+Adafruit_ADS1115 ADS1115;  //ADC + PGA for Apogee Pyranometers
 
 
 // One-Wire Controller Variables -----------------------------------
@@ -109,16 +110,16 @@ byte airTemperatureBuffer[2];
 
 // General Variables -----------------------------------------------
 
-boolean           errorState;
+boolean errorState;
 
-uint32_t          startTime;
-uint32_t          prevTime;
-float             accPower;
+uint32_t startTime;
+uint32_t prevTime;
+float accPower;
 
-int               iridiumSignal;
-uint8_t           iridiumCount;
-int               iridiumError;
-int               NextAlarmHour;
+int iridiumSignal;
+uint8_t iridiumCount;
+int iridiumError;
+int NextAlarmHour;
 
 const byte hours = 13;
 const byte minutes = 49;
@@ -140,7 +141,7 @@ uint8_t runCounter;
 typedef union {
 
   struct {
-    uint8_t     header;
+    uint8_t     wdtCounter;
     uint8_t     programVersion;
     int32_t     timestamp;
     int32_t     latitude;
@@ -151,17 +152,24 @@ typedef union {
     int16_t     waterTemp;
     uint16_t    snowDist;
 
-    int16_t     pitch;
-    int16_t     roll;
-    int16_t     heading;
+    #if INCIDENT_PYRANOMETER
+    int16_t     incident;
+    #endif
+    #if REFLECTED_PYRANOMETER
+    int16_t     reflected;
+    #endif
 
     uint16_t    batteryVoltage;
     uint8_t     gpsSatellites;
     uint8_t     iridiumSignal;
     uint8_t     iridiumRetries;
 
+    #if TOP_TEMP_STRING
     byte        topTempStringMessage[120];
+    #endif
+    #if BOTTOM_TEMP_STRING
     byte        bottomTempStringMessage[120];
+    #endif
 
   } __attribute__((packed));
 
@@ -173,16 +181,14 @@ SBDMessage message;
 
 //-- Function for printing ---------------------------------------
 
-void printDigits(int digits, char sep = ' ')
-{
+void printDigits(int digits, char sep = ' ') {
   if (digits < 10)
     Serial.print('0');
   Serial.print(digits);
   Serial.print(sep);
 }
 
-void printFloat(float value)
-{
+void printFloat(float value) {
   if (value < 10) {
     Serial.print(F("   "));
   } else if (value < 100) {
@@ -198,8 +204,7 @@ void printFloat(float value)
   Serial.print(value, 2);
 }
 
-void printFloatUnits(float value, FlashString units)
-{
+void printFloatUnits(float value, FlashString units) {
   printFloat(value);
   Serial.print(' ');
   Serial.print(units);
@@ -207,8 +212,7 @@ void printFloatUnits(float value, FlashString units)
 }
 
 
-void printLabelFloat(FlashString msg, float value, FlashString units)
-{
+void printLabelFloat(FlashString msg, float value, FlashString units) {
   Serial.print(msg);
   Serial.print(": ");
   Serial.print(value, 2);
@@ -217,29 +221,25 @@ void printLabelFloat(FlashString msg, float value, FlashString units)
   Serial.print("  ");
 }
 
-void printLabelFloat(FlashString msg, float value)
-{
+void printLabelFloat(FlashString msg, float value) {
   printLabelFloat(msg, value, F(""));
 }
 
-void printLabelInt(FlashString msg, int value)
-{
+void printLabelInt(FlashString msg, int value) {
   Serial.print(msg);
   Serial.print(": ");
   Serial.print(value);
   Serial.print(" ");
 }
 
-void printLabelInt(FlashString msg, unsigned int value)
-{
+void printLabelInt(FlashString msg, unsigned int value) {
   Serial.print(msg);
   Serial.print(": ");
   Serial.print(value);
   Serial.print(" ");
 }
 
-void printString(FlashString msg, int width = 12)
-{
+void printString(FlashString msg, int width = 12) {
   size_t k = Serial.print(msg);
 
   for (; k < width; k++) {
@@ -247,16 +247,14 @@ void printString(FlashString msg, int width = 12)
   }
 }
 
-void printSeparator(char c, uint8_t len = 75)
-{
+void printSeparator(char c, uint8_t len = 75) {
   for (int k = 0; k < len; k++) {
     Serial.print(c);
   }
   Serial.println();
 }
 
-void displayBanner(char* msg, char top = '=', char bottom = '-')
-{
+void displayBanner(char* msg, char top = '=', char bottom = '-') {
   printSeparator(top);
   Serial.println(msg);
   printSeparator(bottom);
@@ -268,14 +266,12 @@ void clearMessage() {
 
   memset(message.bytes, 0, sizeof(message));
 
-  message.header = runCounter;
+  message.wdtCounter = runCounter;
   message.programVersion = PROGRAM_VERSION;
   message.timestamp = rtc.getEpoch();
-  
 }
 
-int16_t floatToInt(float value, float scale)
-{
+int16_t floatToInt(float value, float scale) {
   if (value < 0) {
     return int16_t(value * scale - 0.5);
   } else {
@@ -285,16 +281,15 @@ int16_t floatToInt(float value, float scale)
 
 //-- Setup Loop ----------------------------------------------------
 
-void setup()
-{
-  rtc.begin();    // Start the RTC in 24hr mode
-  rtc.setTime(hours, minutes, seconds);   // Set the time
-  rtc.setDate(DAY, MONTH, YEAR);    // Set the date
-  
-  Wire.begin(); // Join the I2C bus as master
+void setup() {
+  rtc.begin();                           // Start the RTC in 24hr mode
+  rtc.setTime(hours, minutes, seconds);  // Set the time
+  rtc.setDate(DAY, MONTH, YEAR);         // Set the date
+
+  Wire.begin();  // Join the I2C bus as master
 
   configureIO();
-  resetWatchdog(); //Pet the watchdog
+  resetWatchdog();  //Pet the watchdog
 
   Serial.println();
   Serial.print(F("CRYOSPHERE INNOVATION SIMB3 Ver "));
@@ -302,15 +297,21 @@ void setup()
   Serial.print(F(" ... "));
   Serial.println(F("Ready"));
 
-  // flash LED to indicated transmission interval
-  if(TRANSMISSION_INTERVAL == 1){
-      digitalWrite(SIMB3_LED_G, HIGH);
-      delay(500);
-      digitalWrite(SIMB3_LED_G, LOW);
-      delay(500);
+
+  if(INCIDENT_PYRANOMETER || REFLECTED_PYRANOMETER){
+    ADS1115.setGain(GAIN_EIGHT);
+    ADS1115.begin();
   }
-  if(TRANSMISSION_INTERVAL == 4){
-    for(int i = 0; i < 4; i++){
+
+  // flash LED to indicated transmission interval
+  if (TRANSMISSION_INTERVAL == 1) {
+    digitalWrite(SIMB3_LED_G, HIGH);
+    delay(500);
+    digitalWrite(SIMB3_LED_G, LOW);
+    delay(500);
+  }
+  if (TRANSMISSION_INTERVAL == 4) {
+    for (int i = 0; i < 4; i++) {
       digitalWrite(SIMB3_LED_G, HIGH);
       delay(500);
       digitalWrite(SIMB3_LED_G, LOW);
@@ -323,9 +324,8 @@ void setup()
 
 //== Main Loop (this runs iteratively) ===============================
 
-void loop()
-{
-  resetWatchdog(); //Pet the watchdog
+void loop() {
+  resetWatchdog();  //Pet the watchdog
   startTime = prevTime = millis();
   accPower = 0;
   runCounter++;
@@ -345,27 +345,47 @@ void loop()
   Serial.println(F("Reading Barometer..."));
   readBarometer();
   showElapsed(F("BMP280 Barometer"));
-  resetWatchdog(); //Pet the watchdog
+  resetWatchdog();  //Pet the watchdog
 
   // Read GPS
   Serial.println(F("Reading GPS..."));
   GPS.begin(9600);
   configureGPS();
   if (readGPS()) {
-    rtc.setTime(GPS.hour, GPS.minute, GPS.seconds);   // Set the time
-    rtc.setDate(GPS.day, GPS.month, GPS.year);    // Set the date
-    message.timestamp = rtc.getEpoch(); //Second place this gets set, just in case.
+    rtc.setTime(GPS.hour, GPS.minute, GPS.seconds);  // Set the time
+    rtc.setDate(GPS.day, GPS.month, GPS.year);       // Set the date
+    message.timestamp = rtc.getEpoch();              //Second place this gets set, just in case.
   }
   showElapsed(F("GPS"));
   Serial.println(F("GPS Read...Turning off GPS..."));
   digitalWrite(SIMB3_GPS_ENABLE, LOW);
-  resetWatchdog(); //Pet the watchdog
+  resetWatchdog();  //Pet the watchdog
 
   digitalWrite(SIMB3_12V_ENABLE, LOW);
+
+  // Read Battery Voltage
+  readBatteryVoltage();
+  
+  // powermon.shutdown();
+  delay(1000);
 
   // Read One-Wire Controller
   readOnewireController();
   showElapsed(F("One-wire Controller"));
+
+  // Read Incident Apogee
+  #if INCIDENT_PYRANOMETER
+    Serial.println(F("Reading Incident Pyranometer..."));
+    readIncidentPyranometer();
+    showElapsed(F("Apogee Incident Pyranometer"));
+  #endif
+
+  // Read Reflected Apogee
+  #if REFLECTED_PYRANOMETER
+    Serial.println(F("Reading Reflected Pyranometer..."));
+    readReflectedPyranometer();
+    showElapsed(F("Apogee Reflected Pyranometer"));
+  #endif
 
   // Read Maxbotix
   Serial.println(F("Reading Snow Depth..."));
@@ -382,11 +402,11 @@ void loop()
   displayMessage();
 
   // Transmit over Iridium
-  if(IRIDIUM_ENABLE){
-    Serial.println(F("\nTransmitting on Iridium..."));  
+  if (IRIDIUM_ENABLE) {
+    Serial.println(F("\nTransmitting on Iridium..."));
     iridiumOn();
     Serial.println(F("Iridium is on."));
-    resetWatchdog(); //Pet the watchdog
+    resetWatchdog();  //Pet the watchdog
     sendIridium();
     iridiumOff();
     showElapsed(F("Iridium"));
@@ -395,9 +415,9 @@ void loop()
     Serial.println(iridiumError);
     if (iridiumError == 0) {
       digitalWrite(SIMB3_LED_G, LOW);
-      }
+    }
   }
-  
+
   // Turn off power rails
   digitalWrite(SIMB3_12V_ENABLE, HIGH);
   digitalWrite(SIMB3_5V_ENABLE, LOW);
@@ -422,8 +442,7 @@ void loop()
 //== End Main Loop ==============================================
 
 //-- Operational functions --------------------------------------
-void configureIO()
-{
+void configureIO() {
   pinMode(SIMB3_MAXBOTIX_ENABLE, OUTPUT);
   pinMode(SIMB3_GPS_ENABLE, OUTPUT);
   pinMode(SIMB3_IRIDIUM_ENABLE, OUTPUT);
@@ -444,13 +463,13 @@ void configureIO()
   detachInterrupt(1);
 
   Serial.print(F("32"));
-  powermon.wakeup();
+  // powermon.wakeup();
   Serial.print(F("32"));
-  powermon.write(LTC2945_CONTROL_REG, LTC2945_SENSE_MONITOR);
+  // powermon.write(LTC2945_CONTROL_REG, LTC2945_SENSE_MONITOR);
+
 }
 
-void configureIridium()
-{
+void configureIridium() {
   Serial.println(F("Configuring the iridium"));
   iridium.attachConsole(Serial);
   iridium.attachDiags(Serial);
@@ -460,8 +479,7 @@ void configureIridium()
   iridium.useMSSTMWorkaround(false);
 }
 
-void iridiumOn()
-{
+void iridiumOn() {
   digitalWrite(SIMB3_IRIDIUM_ENABLE, HIGH);
   Serial.println(F("Turned on the iridium"));
   Serial1.begin(19200);
@@ -471,27 +489,23 @@ void iridiumOn()
   iridium.begin();
 }
 
-void iridiumOff()
-{
+void iridiumOff() {
   iridium.sleep();
   digitalWrite(SIMB3_IRIDIUM_ENABLE, LOW);
 }
 
-void sendIridium()
-{
+void sendIridium() {
   iridiumSignal = -1;
-  iridiumCount  = 0;
-  iridiumError  = -1;
+  iridiumCount = 0;
+  iridiumError = -1;
 
   iridium.getSignalQuality(iridiumSignal);
   message.iridiumSignal = iridiumSignal;
-  
-  iridiumError = iridium.sendSBDBinary(message.bytes, sizeof(message)); //actually transmit
- 
+
+  iridiumError = iridium.sendSBDBinary(message.bytes, sizeof(message));  //actually transmit
 }
 
-void configureGPS()
-{
+void configureGPS() {
   digitalWrite(SIMB3_GPS_ENABLE, HIGH);
 
   GPS.begin(9600);
@@ -501,8 +515,7 @@ void configureGPS()
   GPS.reset();
 }
 
-boolean readGPS()
-{
+boolean readGPS() {
   uint32_t timeout = millis() + GPS_TIMEOUT;
   bool found = false;
 
@@ -510,33 +523,33 @@ boolean readGPS()
 
   while ((millis() < timeout) && !found) {
     GPS.read();
-    found = GPS.newNMEAreceived() &&
-            GPS.parse(GPS.lastNMEA()) &&
-            GPS.fix &&
-            GPS.satellites > 0;
+    found = GPS.newNMEAreceived() && GPS.parse(GPS.lastNMEA()) && GPS.fix && GPS.satellites > 0;
   }
 
-  message.latitude  = int32_t(GPS.latitude * 1000000);
+  message.latitude = int32_t(GPS.latitude * 1000000);
   message.longitude = int32_t(GPS.longitude * 1000000);
   message.gpsSatellites = GPS.satellites;
 
   return found;
 }
 
-void displayMessage()
-{
+void displayMessage() {
   Serial.println("\n---------------------- SBD Message Preview ----------------------\n");
-  printString(F("Header"));
-  Serial.print(F("ID: "));
-  Serial.print(message.header & 0xF0);
-  Serial.print(F(" Format: "));
-  Serial.print(message.header & 0x0F);
+
   Serial.print(F(" Software Version: "));
   Serial.println(message.programVersion);
 
   // Timestamp
   printString(F("Timestamp"));
   Serial.println(message.timestamp);
+
+  // WD Timer
+  printString(F("Watch Dog Timer Counter "));
+  Serial.println(message.wdtCounter);
+
+  // Voltage
+  printString(F("Battery Voltage "));
+  Serial.println(message.batteryVoltage/100.0);
 
   // GPS
   printString(F("GPS Time"));
@@ -558,13 +571,6 @@ void displayMessage()
   printLabelInt(F("satellites"), message.gpsSatellites);
   Serial.println();
 
-  // Compass
-  printString(F("Compass"));
-  printLabelFloat(F("Heading"), message.heading / 10.);
-  printLabelFloat(F("pitch"), message.pitch / 10.);
-  printLabelFloat(F("roll"), message.roll / 10.);
-  Serial.println();
-
   // Barometer
   printString(F("Barometer"));
   printLabelFloat(F("Pressure"), message.airPressure / 10.0);
@@ -574,6 +580,20 @@ void displayMessage()
   printString(F("Air Temp"));
   printLabelFloat(F("Deg C"), SIMB3_ONEWIRE_CONTROLLER.decodeTemperatureBytes(message.airTemp[0], message.airTemp[1]));
   Serial.println();
+
+  #if INCIDENT_PYRANOMETER
+    float incident_multiplier = 0.0156F; /* ADS1115  @ +/- 2.048V gain (16-bit results) */
+    printString(F("Incident Sunlight"));
+    printLabelFloat(F(""), message.incident * incident_multiplier * 22);
+    Serial.println();
+  #endif
+
+  #if REFLECTED_PYRANOMETER
+    float reflected_multiplier = 0.0156F; /* ADS1115  @ +/- 2.048V gain (16-bit results) */
+    printString(F("Reflected Sunlight"));
+    printLabelFloat(F(""), message.reflected * reflected_multiplier * 28.5);
+    Serial.println();
+  #endif
 
   // Maxbotix
   printString(F("Maxbotix"));
@@ -599,22 +619,21 @@ void displayMessage()
   }
   Serial.println("\n");
 
-// One-Wire Controller
+  // One-Wire Controller
   Serial.println(F("One-Wire Temperature String (Deg C)"));
   SIMB3_ONEWIRE_CONTROLLER.printTemperatureString(1, topTempStringBuffer);
   Serial.println(F(""));
   SIMB3_ONEWIRE_CONTROLLER.printTemperatureString(2, bottomTempStringBuffer);
-
-
+  Serial.println(F(""));
+  SIMB3_ONEWIRE_CONTROLLER.printAirTemperature(airTemperatureBuffer);
 }
 
-void readBarometer()
-{
+void readBarometer() {
   boolean bmeError;
   int16_t hPa;
 
   unsigned long startTime = millis();
-  while (millis() < startTime + 5000) { //Give it 5 seconds just in case
+  while (millis() < startTime + 5000) {  //Give it 5 seconds just in case
     if (bme.begin()) {
       bmeError = false;
       break;
@@ -633,61 +652,61 @@ void readBarometer()
 
 void readOnewireController(){
 
-  Serial.print(F("Resetting One-Wire controller..."));
-  SIMB3_ONEWIRE_CONTROLLER.reset();
-  Serial.println(F("Controller reset.\n"));
-
   // Read top temperature string
-  bool done = false;
-  unsigned long timeout = millis() + TEMPSTRING_TIMEOUT;
-  while(!done && (millis() < timeout)){
+  #if TOP_TEMP_STRING
+    bool done = false;
+    int reattempts = 0;
+    while(!done && reattempts < TEMPSTRING_ATTEMPTS){
     done = SIMB3_ONEWIRE_CONTROLLER.readTopString();
-  }
+    if(!done){
+      delay(2000);
+      reattempts++;
+      // message.aux1 = reattempts;
+    }
+    }
+    delay(6000);
+    SIMB3_ONEWIRE_CONTROLLER.requestTemperatureStringBytes(1, topTempStringBuffer);
+    SIMB3_ONEWIRE_CONTROLLER.packTemperaturesForTransmission(80, topTempStringBuffer, topTempStringPackedBuffer);
+    memcpy(message.topTempStringMessage, topTempStringPackedBuffer, 120);
+  #endif
 
-  delay(2000);
-
-  SIMB3_ONEWIRE_CONTROLLER.requestTemperatureStringBytes(1, topTempStringBuffer);
-  SIMB3_ONEWIRE_CONTROLLER.packTemperaturesForTransmission(80, topTempStringBuffer, topTempStringPackedBuffer);
-
-  for(int i = 0; i < 120; i++){
-    message.topTempStringMessage[i] = topTempStringPackedBuffer[i];
-  }
-
-  // Read bottom temperature string
-  done = false;
-  timeout = millis() + TEMPSTRING_TIMEOUT;
-  while(!done && (millis() < timeout)){
+  #if BOTTOM_TEMP_STRING
+    // Read bottom temperature string
+    done = false;
+    reattempts = 0;
+    while(!done && reattempts < TEMPSTRING_ATTEMPTS){
     done = SIMB3_ONEWIRE_CONTROLLER.readBottomString();
-  }
+    if(!done){
+      delay(2000);
+      reattempts++;
+      // message.aux2 = reattempts;
+    }
+    }
+    delay(6000);
+    SIMB3_ONEWIRE_CONTROLLER.requestTemperatureStringBytes(2, bottomTempStringBuffer);
+    SIMB3_ONEWIRE_CONTROLLER.packTemperaturesForTransmission(80, bottomTempStringBuffer, bottomTempStringPackedBuffer);
+    memcpy(message.bottomTempStringMessage, bottomTempStringPackedBuffer, 120);
+  #endif
   
-  delay(2000);
-  
-  SIMB3_ONEWIRE_CONTROLLER.requestTemperatureStringBytes(2, bottomTempStringBuffer);
-  SIMB3_ONEWIRE_CONTROLLER.packTemperaturesForTransmission(80, bottomTempStringBuffer, bottomTempStringPackedBuffer);
-
-  for(int i = 0; i < 120; i++){
-    message.bottomTempStringMessage[i] = bottomTempStringPackedBuffer[i];
-  }
-
   // Read air temperature
   done = false;
-  timeout = millis() + AIR_TEMP_TIMEOUT;
-  while(!done && (millis() < timeout)){
-    done = SIMB3_ONEWIRE_CONTROLLER.readAirTemperature();
+  reattempts = 0;
+  while(!done && reattempts < AIR_TEMP_ATTEMPTS){
+  done = SIMB3_ONEWIRE_CONTROLLER.readAirTemperature();
+  if(!done){
+     delay(2000);
+     reattempts++;
+    //  message.aux3 = reattempts;
+   }
   }
 
   delay(2000);
-
   SIMB3_ONEWIRE_CONTROLLER.requestAirTempBytes(airTemperatureBuffer);
-  
-  for(int i = 0; i < 2; i++){
-    message.airTemp[i] = airTemperatureBuffer[i];
-  }
+  memcpy(message.airTemp, airTemperatureBuffer, 2);
   
 }
 
-boolean readMaxbotix()
-{
+boolean readMaxbotix() {
   uint32_t timeout = millis() + 5000;
   boolean done = false;
   message.snowDist = 0xBEE5;
@@ -700,7 +719,7 @@ boolean readMaxbotix()
   while (!done && (millis() < timeout)) {
     maxbotix.read();
     done = maxbotix.newLineReceived() && maxbotix.parse(maxbotix.lastLine());
-    if(maxbotix.distance == 0){
+    if (maxbotix.distance == 0) {
       done = false;
     }
   }
@@ -710,8 +729,7 @@ boolean readMaxbotix()
   return done;
 }
 
-boolean readAirmar()
-{
+boolean readAirmar() {
   uint32_t timeout = millis() + 20000;
   boolean done = false;
 
@@ -731,18 +749,43 @@ boolean readAirmar()
   return done;
 }
 
+#if INCIDENT_PYRANOMETER
+void readIncidentPyranometer()
+{
+  int16_t results510;
+  results510 = ADS1115.readADC_Differential_0_1();
+  message.incident = results510;
+}
+#endif
+
+#if REFLECTED_PYRANOMETER
+void readReflectedPyranometer()
+{
+  int16_t results610;
+  results610 = ADS1115.readADC_Differential_2_3();
+  message.reflected = results610;
+}
+#endif
+
 void alarmMatch() // Do something when interrupt called
 {
 
 }
 
-float displayPowerMonitor()
-{
+void readBatteryVoltage() {
   float vin = powermon.read12(LTC2945_VIN_MSB_REG) * 0.025;
   float ain = powermon.read12(LTC2945_DELTA_SENSE_MSB_REG) * 25 / SIMB3_POWERMON_RESISTOR / 1000;
   float pwr = vin * ain;
 
   message.batteryVoltage = floatToInt(vin, 100);
+}
+
+float displayPowerMonitor() {
+  float vin = powermon.read12(LTC2945_VIN_MSB_REG) * 0.025;
+  float ain = powermon.read12(LTC2945_DELTA_SENSE_MSB_REG) * 25 / SIMB3_POWERMON_RESISTOR / 1000;
+  float pwr = vin * ain;
+
+  // message.batteryVoltage = floatToInt(vin, 100);
 
 #if DEBUG
   printFloatUnits(vin, F("V"));
@@ -752,26 +795,26 @@ float displayPowerMonitor()
   return pwr;
 }
 
-void showElapsed(FlashString msg)                                           //---- showElapsed function ----//
+void showElapsed(FlashString msg)  //---- showElapsed function ----//
 {
-  uint32_t now = millis();                                                // Store the time in milliseconds since power up
-  uint32_t deltaTime = now - prevTime;                                    // define time difference
-  prevTime = now;                                                         // save the time to be used next time the function is called
+  uint32_t now = millis();              // Store the time in milliseconds since power up
+  uint32_t deltaTime = now - prevTime;  // define time difference
+  prevTime = now;                       // save the time to be used next time the function is called
 
-#if DEBUG                                                                   //---- only executes if debug is set ----//
+#if DEBUG  //---- only executes if debug is set ----//
   printFloatUnits(float(now - startTime) / 1000, F("s"));
   printFloatUnits(float(deltaTime) / 1000, F("s"));
   printString(msg);
-#endif                                                                     //---------------------------------------//
+#endif  //---------------------------------------//
 
-  float mW = displayPowerMonitor();                                       // Determines current draw
-  float mWh = deltaTime / 1000.0 / 3600 * mW;                             // Calculates milliWatt hours
-  accPower += mWh;                                                        // Stores a running tally of total power used so far
+  float mW = displayPowerMonitor();            // Determines current draw
+  float mWh = deltaTime / 1000.0 / 3600 * mW;  // Calculates milliWatt hours
+  accPower += mWh;                             // Stores a running tally of total power used so far
 
-#if DEBUG                                                                   //---- only executes if debug is set ----//
+#if DEBUG  //---- only executes if debug is set ----//
   printFloatUnits(mWh, F("mWh"));
   Serial.println();
-#endif                                                                      //---------------------------------------//
+#endif  //---------------------------------------//
 }
 
 void resetWatchdog() {
@@ -782,35 +825,34 @@ void resetWatchdog() {
 }
 
 void buoySleep() {
-  rtc.setAlarmSeconds(0); // RTC time to wake, currently seconds only
-  rtc.enableAlarm(rtc.MATCH_SS); // Match seconds only, wakes every minute
-  rtc.attachInterrupt(alarmMatch); // Attaches function to be called, currently blank
+  rtc.setAlarmSeconds(0);           // RTC time to wake, currently seconds only
+  rtc.enableAlarm(rtc.MATCH_SS);    // Match seconds only, wakes every minute
+  rtc.attachInterrupt(alarmMatch);  // Attaches function to be called, currently blank
   Serial.print(F("Sleep until..."));
-  delay(20); // Brief delay prior to sleeping not really sure its required
-  
+  delay(20);  // Brief delay prior to sleeping not really sure its required
+
   Serial.end();
   USBDevice.detach();
-  rtc.standbyMode();    // Sleep until next alarm match  
+  rtc.standbyMode();  // Sleep until next alarm match
   postSleepRoutine();
 }
 
 void postSleepRoutine() {
   sleepCycleCount++;
   USBDevice.attach();
-  resetWatchdog(); //Pet the watchdog
+  resetWatchdog();  //Pet the watchdog
   Serial.println(F("Just woke up."));
-  
+
   if (TRANSMISSION_INTERVAL == 1) {
     if (rtc.getMinutes() == 0 || sleepCycleCount > 65) {
-      return;  
+      return;
     } else {
       Serial.println(F("Sleeping some more."));
       buoySleep();
-  }
-  } 
-  else if (TRANSMISSION_INTERVAL == 4) {
+    }
+  } else if (TRANSMISSION_INTERVAL == 4) {
     if ((rtc.getMinutes() == 0 && (rtc.getHours() == 0 || rtc.getHours() == 4 || rtc.getHours() == 8 || rtc.getHours() == 12 || rtc.getHours() == 16 || rtc.getHours() == 20)) || sleepCycleCount > 260) {
-      return;  
+      return;
     } else {
       Serial.println(F("Sleeping some more."));
       buoySleep();
